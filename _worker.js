@@ -132,7 +132,105 @@ export default {
       }
 
       if (url.pathname.startsWith("/sub")) {
-        return Response.redirect(SUB_PAGE_URL + `?host=${APP_DOMAIN}`, 301);
+        // Return subscription data in API format
+        const filterCC = url.searchParams.get("cc")?.split(",") || [];
+        const filterPort = url.searchParams.get("port")?.split(",") || PORTS;
+        const filterVPN = url.searchParams.get("vpn")?.split(",") || PROTOCOLS;
+        const filterLimit = parseInt(url.searchParams.get("limit")) || 10;
+        const filterFormat = url.searchParams.get("format") || "raw";
+        const fillerDomain = url.searchParams.get("domain") || APP_DOMAIN;
+
+        const prxBankUrl = url.searchParams.get("prx-list") || env.PRX_BANK_URL;
+        const prxList = await getPrxList(prxBankUrl)
+          .then((prxs) => {
+            // Filter CC
+            if (filterCC.length) {
+              return prxs.filter((prx) => filterCC.includes(prx.country));
+            }
+            return prxs;
+          })
+          .then((prxs) => {
+            // shuffle result
+            shuffleArray(prxs);
+            return prxs;
+          });
+
+        const uuid = crypto.randomUUID();
+        const result = [];
+        for (const prx of prxList) {
+          const uri = new URL(`${atob(horse)}://${fillerDomain}`);
+          uri.searchParams.set("encryption", "none");
+          uri.searchParams.set("type", "ws");
+          uri.searchParams.set("host", APP_DOMAIN);
+
+          for (const port of filterPort) {
+            for (const protocol of filterVPN) {
+              if (result.length >= filterLimit) break;
+
+              uri.protocol = protocol;
+              uri.port = port.toString();
+              if (protocol == "ss") {
+                uri.username = btoa(`none:${uuid}`);
+                uri.searchParams.set(
+                  "plugin",
+                  `${atob(v2)}-plugin${port == 80 ? "" : ";tls"};mux=0;mode=websocket;path=/${prx.prxIP}-${
+                    prx.prxPort
+                  };host=${APP_DOMAIN}`
+                );
+              } else {
+                uri.username = uuid;
+              }
+
+              uri.searchParams.set("security", port == 443 ? "tls" : "none");
+              uri.searchParams.set("sni", port == 80 && protocol == atob(flash) ? "" : APP_DOMAIN);
+              uri.searchParams.set("path", `/${prx.prxIP}-${prx.prxPort}`);
+
+              uri.hash = `${result.length + 1} ${getFlagEmoji(prx.country)} ${prx.org} WS ${
+                port == 443 ? "TLS" : "NTLS"
+              } [${serviceName}]`;
+              result.push(uri.toString());
+            }
+          }
+        }
+
+        let finalResult = "";
+        switch (filterFormat) {
+          case "raw":
+            finalResult = result.join("\n");
+            break;
+          case atob(v2):
+            finalResult = btoa(result.join("\n"));
+            break;
+          case atob(neko):
+          case "sfa":
+          case "bfr":
+            const res = await fetch(CONVERTER_URL, {
+              method: "POST",
+              body: JSON.stringify({
+                url: result.join(","),
+                format: filterFormat,
+                template: "cf",
+              }),
+            });
+            if (res.status == 200) {
+              finalResult = await res.text();
+            } else {
+              return new Response(res.statusText, {
+                status: res.status,
+                headers: {
+                  ...CORS_HEADER_OPTIONS,
+                },
+              });
+            }
+            break;
+        }
+
+        return new Response(finalResult, {
+          status: 200,
+          headers: {
+            ...CORS_HEADER_OPTIONS,
+          },
+        });
       } else if (url.pathname.startsWith("/check")) {
         const target = url.searchParams.get("target").split(":");
         const result = await checkPrxHealth(target[0], target[1] || "443");
